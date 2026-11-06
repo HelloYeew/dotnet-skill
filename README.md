@@ -1,10 +1,30 @@
 # helloyeew-dotnet-skill
 
+[![skills.sh](https://skills.sh/b/HelloYeew/dotnet-skill)](https://skills.sh/HelloYeew/dotnet-skill)
+
 A Claude Code skill with my personal .NET and C# preferences: the way I write C#, set up projects, and build things on ASP.NET Core and [Sakura Framework](https://github.com/HelloYeew/sakura).
 
 This skill include all of my C# personal styling that's different from Microsoft's .NET convention (e.g. disable implicit using, not `var` anywhere, private constants are `all_lower` and public ones `ALL_UPPER`, mark unused usage as "error") to my project setup style and knowledge of some framework and my .NET ecosystem library preference I use for work like ASP.NET, especially Sakura Framework that I use it personally for some GUI desktop application to making game with it with some coding and styling recommendation and make sure you use all of Sakura's advantage on your project from setup, cross-platform code to release your app to installable file and best performance as possible.
 
 ## Install
+
+### With skills.sh
+
+Install it with the [skills](https://skills.sh/HelloYeew/dotnet-skill) CLI:
+
+```shell
+npx skills add HelloYeew/dotnet-skill
+```
+
+It asks which agents to install it for (Claude Code, Codex, Cursor and others). It installs into the current project by default; add `-g` to install it for all your projects. To install it globally for Claude Code without any prompts:
+
+```shell
+npx skills add HelloYeew/dotnet-skill -g -a claude-code -y
+```
+
+Update with `npx skills update`.
+
+### With git
 
 Clone it into your Claude Code skills folder:
 
@@ -12,7 +32,9 @@ Clone it into your Claude Code skills folder:
 git clone https://github.com/HelloYeew/dotnet-skill ~/.claude/skills/helloyeew-dotnet-skill
 ```
 
-Claude loads it when you work on C# or .NET code. Update with `git pull` in that folder.
+Update with `git pull` in that folder.
+
+Either way, your agent loads it when you work on C# or .NET code.
 
 ## What's inside
 
