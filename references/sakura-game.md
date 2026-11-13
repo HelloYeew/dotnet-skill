@@ -227,7 +227,7 @@ Keywords: color, palette, theme, screen colors, contrast, WCAG, accessibility, c
 
 - A color provider returns a palette (surface, accent, control, backdrop, text, muted text…) for each part of the game. Each screen caches its own palette, so a shared control takes the colors of the screen it's on.
 - Domain colors get their own class (team colors, item rarity, damage types, judgement or rank colors), never literals in drawables.
-- Test text contrast against WCAG in a unit test, with a helper that picks a readable text color for a background. Sakura's `ColorExtensions.GetContrastRatio` and `GetRelativeLuminance` arrive after `2026.1101.0`; until then keep the maths in the helper.
+- Test text contrast against WCAG in a unit test, with a helper that picks a readable text color for a background. The helper uses Sakura's `ColorExtensions.GetContrastRatio` and `GetRelativeLuminance` (since `2026.1106.0`) for the maths.
 - Don't carry meaning by color alone: pair it with a shape, an icon or text, for color-blind players.
 - Font roles come from the design, if there is one. For example: one display font for everything that isn't running text (titles, labels, buttons, every number), one text font for prose, dialogue and anything the player types or picks, and a fallback per script the game supports.
 - Get every `FontUsage` through one helper that takes the role, the size and the weight, so a font change is one edit.

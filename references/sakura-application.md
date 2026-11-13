@@ -160,7 +160,7 @@ Cache<ISampleColorProvider>(colors);
 - Live theme switch: when the theme setting changes, swap the provider's palette, then walk the tree once from the root (`InternalChildren`, recursively) and tell every themeable control to re-read its colors, for example through your own small `IThemeable.ApplyTheme()` interface. Controls don't subscribe to the theme setting themselves.
 - Why walk instead of subscribe: hundreds of controls each binding the same setting means hundreds of listeners on a reactive that lives as long as the app, and `OwnReactive` on a shared reactive would cut everyone's binding (see `references/sakura-framework.md`, "React to value changes").
 - Apply the theme with duration `0` during load, so nothing animates on first show.
-- Check text contrast against WCAG in a unit test, in both themes. Sakura's `GetContrastRatio` is newer than `2026.1101.0`; until the next release, keep a small helper of your own.
+- Check text contrast against WCAG in a unit test, in both themes, with Sakura's `color.GetContrastRatio(other)` (since `2026.1106.0`).
 
 ## Confirm before closing with unsaved work — `OnExitRequested`, `Host.Exit()`
 

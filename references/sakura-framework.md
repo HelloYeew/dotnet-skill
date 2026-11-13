@@ -2,7 +2,7 @@
 
 How I build apps and games on [Sakura Framework](https://github.com/HelloYeew/sakura). Sakura is freeform, so most things can be done several ways. This file records the way I use it and the traps I've already fallen into.
 
-- Written against Sakura `2026.1101.0`. Where an API is newer than that, the section says so.
+- Written against Sakura `2026.1101.0`, and updated for `2026.1111.0`, the release that moved Sakura to .NET 11. Where an API is newer than `2026.1101.0`, the section says which release added it.
 - Desktop tools: also read `references/sakura-application.md`. Games: also read `references/sakura-game.md`. Code style: `references/csharp-style.md`. General .NET setup: `references/project-setup.md`.
 - API reference: https://helloyeew.github.io/sakura-api-docs. Working examples of almost every feature: the visual tests in `Sakura.Framework.Tests/Visuals/` in the Sakura repo.
 
@@ -126,7 +126,7 @@ What else is there:
 | `Sakura.Framework.Utilities.Precision` | `AlmostEquals`, `AlmostEqualZero`, `AlmostBigger`, `DefinitelyBigger`, `AlmostIntersects` |
 | `Sakura.Framework.Utilities.General` | `AttemptWithRetryOnException<TException>` (retry an action a set number of times) |
 
-- This list is from `2026.1101.0` (except `Descendants` and the contrast methods, which are newer). Check the folders themselves for anything added since.
+- This list is from `2026.1101.0` (except `Descendants` and the contrast methods, which arrived in `2026.1106.0`). Check the folders themselves for anything added since.
 - A helper that's general enough to need in two apps belongs in Sakura's `Extensions/`, not copied between apps.
 
 ## Create a new Sakura app — `dotnet new sakura`, `HostOptions`, `AppType`, `Directory.Build.props`
@@ -147,7 +147,7 @@ In both:
 
 - Migrate to `.slnx` (`dotnet sln migrate`, then delete the `.sln`).
 - Only the shared project (`.Application` or `.Game`) references `Sakura.Framework`. Delete the reference the template puts in `.Desktop`: the other projects get it through their reference to the shared project. Phone heads add only their own head package (see "Add iPhone, iPad and Android").
-- Pin the version: `<PackageReference Include="Sakura.Framework" Version="2026.1101.0" />`. Sakura uses CalVer, and `*-*` pulls whatever was published last.
+- Pin the version: `<PackageReference Include="Sakura.Framework" Version="2026.1111.0" />`. Sakura uses CalVer, and `*-*` pulls whatever was published last.
 - `Directory.Build.props` must embed resources, or nothing in `Resources/` can be loaded:
 
 ```xml
@@ -176,7 +176,8 @@ public static class Program
 - `HostOptions.AppType` is `Game` unless you say otherwise. A game busy-spins the update and draw threads, runs input and audio at 1000 Hz, limits frames to twice the refresh rate, and keeps the screen awake. A tool sets `AppType = AppType.Application` (VSync, no spinning, the screen can sleep). `host.KeepScreenOn` can still be switched on while a video plays.
 - Trap: settings are written with their defaults, so a machine that ran the app as a `Game` keeps `FrameLimiter = Limit2x` in its `framework.ini` after you switch to `Application`.
 - `HostOptions.FriendlyAppName` is the display name. `PortableInstallation = true` keeps all data beside the executable instead (this also happens when a `framework.ini` sits beside it).
-- The desktop app and the tests need the .NET 10 SDK. iOS needs the .NET 11 SDK.
+- Sakura targets .NET 11 from `2026.1111.0` on. Every project targets `net11.0` (the shared project, the desktop head and the tests; the phone heads `net11.0-android` and `net11.0-ios`), builds with the .NET 11 SDK, and sets `<LangVersion>15.0</LangVersion>` in `Directory.Build.props`, as the template does. Up to `2026.1106.0`, Sakura targeted .NET 10 (only iOS needed .NET 11).
+- Trap: a `net10.0` project can't use Sakura `2026.1111.0` or later, and nothing says so clearly. Restore succeeds (the package's `buildtransitive` targets count as compatible), then the build fails with `CS0246: The type or namespace name 'Sakura' could not be found`. A `*-*` reference picks the newest release, so it breaks the day one is published. Move the project to `net11.0` when you bump past `2026.1106.0`.
 
 ## Work against a local Sakura checkout — `UseLocalFramework.sh`
 
@@ -390,7 +391,7 @@ Keywords: layout, position, align, center, fill parent, stretch, full width, aut
 - `Masking = true` clips children to the container's bounds. Set it together with `CornerRadius`, `BorderThickness` and `BorderColor`, or `EdgeEffect` for shadows. `CircularContainer` is fully round. `MaskingFade = new MarginPadding { Vertical = 24 }` fades the content out towards the edges instead of cutting it, for a scrolling list.
 - `ScreenSpaceDrawQuad` gives the true corners of a rotated or sheared drawable.
 - Trap: `Depth` doesn't reorder a `FlowContainer`. Insert children in the order you want them laid out.
-- Trap: `ChildrenOfType<T>()` only looks at direct children. For a deep search, `drawable.Descendants().OfType<T>()` (and `DescendantsAndSelf()`) walk `InternalChildren`, parents first. They're newer than `2026.1101.0`; until the next release, write a small recursive walk over `InternalChildren`.
+- Trap: `ChildrenOfType<T>()` only looks at direct children. For a deep search, `drawable.Descendants().OfType<T>()` (and `DescendantsAndSelf()`) walk `InternalChildren`, parents first. They arrived in `2026.1106.0`.
 - Trap: `Children` goes through `Content`, so the parts a wrapping container built with `AddInternal` are invisible through it. Walk `InternalChildren` to see everything.
 - Scaling to the window: `DrawSizePreservingFillContainer` scales the whole UI to a fixed design size (1920×1080 by default, `TargetDrawSize`). That suits games (see `references/sakura-game.md`, "Scale the UI for every screen"). Desktop tools shouldn't use it (see `references/sakura-application.md`, "Scale the UI like a desktop app").
 
@@ -441,7 +442,7 @@ Keywords: rectangle, background, circle, dot, line, polyline, triangle, curve, r
 - `RingArc` (`Start`, `Progress`, `InnerRadius`, `SmoothEdges`) for progress rings and spinners. `ParticleField` (`Clear()`, then `Add(new Particle(...))` every frame) for particles. `WaveformGraph` draws an audio `Waveform`.
 - Trap: `PlotCanvas` and `ParticleField` fill their parent by default. Set `RelativeSizeAxes = Axes.None` for a fixed size.
 - Color: `Color = Color.DimGray`, `Alpha = 0.5f`, `ColorExtensions.FromHex("#3A7BD5")`, `color.Darken(0.2f)`, `color.Lighten(0.2f)`. Gradient: `ColorInfo = ColorInfo.GradientVertical(top, bottom)`. `color.BlendPerceptually(other, 0.5f)` mixes in Oklab (`OklabColor`), so the middle doesn't go gray or muddy.
-- WCAG contrast: `color.GetContrastRatio(other)` (1 to 21) and `GetRelativeLuminance()`, for a theme provider's own check. They're newer than `2026.1101.0`; until the next release, keep your own WCAG helper.
+- WCAG contrast: `color.GetContrastRatio(other)` (1 to 21) and `GetRelativeLuminance()`, for a theme provider's own check. They arrived in `2026.1106.0`.
 - Text: `new SpriteText { Text = "Title", Font = FontUsage.Default.With(size: 14, weight: FontWeights.SemiBold) }`. For an ellipsis: `Truncate = true` with `MaxWidth`. For wrapped text and paragraphs use `TextFlowContainer` (`AddText`, `AddParagraph`, `NewLine`). `ScrollingText` scrolls a line that doesn't fit.
 - Style text with `LetterSpacing` (pixels, counted in `MaxWidth`), `Shadow = true` (`ShadowColor`, `ShadowOffset`; a sharp copy, so blur a `BufferedContainer` for a soft one) and `ColorAt` (a color per position, replacing `ColorInfo`). Example: `Sakura.Framework.Tests/Visuals/Text/TestSpriteTextStyles.cs`.
 - Trap: an animated `ColorAt` needs `text.Invalidate(InvalidationFlags.Color)` every frame, or it keeps the first colors.
@@ -499,6 +500,7 @@ public override bool OnDragDropFile(DragDropFileEvent e)
 
 - Convert a pointer position into a drawable's coordinates with `ToLocalSpace(e.ScreenSpaceMousePosition)`.
 - Keyboard events go to the focused drawable first, then to the rest. Put a screen-wide shortcut in the screen's `OnKeyDown` and an app-wide one in the App's. Check `!e.IsRepeat` for one-shot actions. A key repeat only goes to the drawable that took the first press.
+- Note: an `OnKeyDown` (or `OnKeyUp`) override on the `App` itself calls `base.OnKeyDown(e)` first, and handles the key only when that returns `false`. Why: `App.OnKeyDown` is what dispatches every key. It records the press in the `InputManager`, runs the framework's Ctrl+F shortcuts, and passes the key to the focused drawable and then the key queue. An override that skips `base` cuts all of that off, so no other drawable gets keys and the debug shortcuts stop. (Overrides on other drawables don't need this.)
 - Trap: `KeyModifiers` only has `Control`, `Shift` and `Alt`. Cmd on macOS isn't reported as a modifier, so shortcuts are Ctrl+… on every platform.
 - Trap: the framework takes Ctrl+F1, F2, F3, F6, F7, F9, F10, F11, F12, Ctrl+Shift+L and plain F11 (see "Debug a running app"), before the focused drawable sees them. macOS also keeps Ctrl+F3 to Ctrl+F8 for itself unless its keyboard shortcuts are turned off.
 - Trap: returning `true` from `OnHover` un-hovers the parent, and `TooltipContainer` only searches hovered drawables, so every tooltip inside goes dead. Controls inside a tooltip area return `false` from `OnHover`.
@@ -1117,9 +1119,9 @@ public partial class TestSampleButton : SampleControlTestScene
 
 ## Add iPhone, iPad and Android — `--ios`, `--android`, `SakuraApplication.Run`, `SakuraActivity`
 
-Keywords: mobile, phone, tablet, iOS, iPadOS, iPhone, iPad, Android, head project, net11.0-ios, net10.0-android, workload, Xcode, JDK, Info.plist, AndroidManifest, entry point, MainActivity, AppDelegate, simulator, emulator, install on device, devicectl, adb, sign, provisioning profile, keystore, aab, apk, Vulkan
+Keywords: mobile, phone, tablet, iOS, iPadOS, iPhone, iPad, Android, head project, net11.0-ios, net11.0-android, workload, Xcode, JDK, Info.plist, AndroidManifest, entry point, MainActivity, AppDelegate, simulator, emulator, install on device, devicectl, adb, sign, provisioning profile, keystore, aab, apk, Vulkan
 
-The shared project (`.Application` or `.Game`) stays `net10.0` and references `Sakura.Framework`. Each phone head references the shared project plus one head package, pinned to the same version:
+The shared project (`.Application` or `.Game`) targets `net11.0` and references `Sakura.Framework`. Each phone head references the shared project plus one head package, pinned to the same version:
 
 ```shell
 dotnet new sakura -n Sample --ios --android     # or add the heads to an existing app by copying them from the template
@@ -1128,7 +1130,7 @@ dotnet new sakura -n Sample --ios --android     # or add the heads to an existin
 | Head | Target | Package | Entry point |
 | --- | --- | --- | --- |
 | `Sample.iOS` | `net11.0-ios`, iOS 15+ | `Sakura.Framework.iOS` | `Program.Main` calls `SakuraApplication.Run` |
-| `Sample.Android` | `net10.0-android`, API 29+, `android-arm64` | `Sakura.Framework.Android` | `MainActivity : SakuraActivity` |
+| `Sample.Android` | `net11.0-android`, API 29+, `android-arm64` | `Sakura.Framework.Android` | `MainActivity : SakuraActivity` |
 
 ```csharp
 // iOS. SDL owns UIKit, so Run never returns.
@@ -1141,7 +1143,7 @@ public class MainActivity : SakuraActivity
 }
 ```
 
-- Toolchain: the .NET 11 SDK with `dotnet workload install ios` and `dotnet workload install android`, Xcode 27 on a Mac, JDK 21 and the Android SDK. iOS needs .NET 11 because that's where it gets CoreCLR; the desktop and tests stay on .NET 10.
+- Toolchain: the .NET 11 SDK with `dotnet workload install ios` and `dotnet workload install android`, Xcode 27 on a Mac, JDK 21 and the Android SDK. Every project is on .NET 11, and iOS needs it anyway: that's where iOS gets CoreCLR.
 - Use the same data folder name (`"sample"`) on every head.
 - Both head csproj files keep `<EmbeddedResource Remove="Resources\**" />`: `Resources/` there is the platform's own folder. App assets belong in the shared project.
 - From NuGet, the heads' build fixes come in through the packages' `buildTransitive` files with nothing to add. Against a local checkout the head has to import them itself (see "Work against a local Sakura checkout").
@@ -1167,7 +1169,7 @@ dotnet build Sample.Android -t:Install
 ```
 
 - iOS signing is Xcode's automatic signing. A free Apple account works, but its profiles last 7 days. Wrap the device steps in a script (`install-iphone.sh`).
-- Android Release: `dotnet publish -c Release -f net10.0-android -p:AndroidPackageFormats=apk%3Baab` with `-p:AndroidKeyStore=true` and the signing properties, passwords as `env:`. `ApplicationVersion` (the version code) must keep growing: a date-based `YYMMDDPP` does.
+- Android Release: `dotnet publish -c Release -f net11.0-android -p:AndroidPackageFormats=apk%3Baab` with `-p:AndroidKeyStore=true` and the signing properties, passwords as `env:`. `ApplicationVersion` (the version code) must keep growing: a date-based `YYMMDDPP` does.
 - Version an iOS build with `-p:Version=… -p:ApplicationDisplayVersion=… -p:ApplicationVersion=…`. Velopack has no phone support.
 - Trap: a Debug Android build keeps its assemblies on the device, not in the APK. Install it with `-t:Install` or `-t:Run`; the APK alone won't start.
 - Trap: the Android emulator's API 36 image has a broken Vulkan driver. Use API 35. Warning `XA1040` (CoreCLR on Android is experimental) is expected.
