@@ -1025,7 +1025,7 @@ protected override void LoadComplete()
 
 ## Write tests — `TestScene`, `ManualInputManagerTestScene`, `TestBrowserApp`, `[VisualTestOnly]`
 
-Keywords: test, testing, unit test, visual test, NUnit, headless, test browser, steps, AddStep, AddAssert, AddUntilStep, simulate click, simulate keyboard, InputManager, MoveMouseTo, CI, dotnet test
+Keywords: test, testing, unit test, visual test, NUnit, headless, test browser, steps, AddStep, AddAssert, AddUntilStep, AddWaitStep, step delay, timing, fade, transition, animation, TearDown, simulate click, simulate keyboard, InputManager, MoveMouseTo, CI, dotnet test
 
 The test project (`Sample.Application.Tests` or `Sample.Game.Tests`) is a runnable app as well as an NUnit project:
 
@@ -1116,6 +1116,21 @@ public partial class TestSampleButton : SampleControlTestScene
 - Trap: NUnit reuses one fixture instance for every test in the class, and `SetupNUnit` calls `Clear()` before each test, which disposes the scene's children, including anything built once in the loader. Tests then run against a disposed, detached tree without throwing, and every size reads zero. Override `Clear` to keep the long-lived parts (with `DisposeOnRemoval = false`), or rebuild them in `[SetUp]`.
 - `DrawSize` and auto-size are worked out when read, so they're current right after a change. `DrawRectangle`, `ToScreenSpace` and vertices still use the last frame's layout.
 - Trap: positions on screen settle over a frame or more. Wait until a measurement stops changing before asserting on it (a step that waits until two frames agree).
+- Trap: the two runners pace steps differently. The test browser waits 200 ms after each step (divided by its Rate slider) and checks an `AddUntilStep` every 10 ms; `dotnet test` takes the next step on the next frame, with the clock at 2×. A state that lasts less than 200 ms (a fade, a slide, a "loading" state) is still there for a headless assert and already gone in the browser, so the scene passes under `dotnet test` and fails when watched. Read such a state in the step that starts it, keep it in a field, and assert the field in the next step; wait for an end state with `AddUntilStep`. Never add a delay instead: `AddWaitStep` takes milliseconds of the test clock, which runs at a different speed in each runner.
+
+```csharp
+float alphaWhenShown = -1;
+
+AddStep("Show the popover", () =>
+{
+    popovers.Show(panel, anchor, () => { });
+    alphaWhenShown = panel.Alpha;   // read now: the fade is over before the browser's next step
+});
+AddAssert("It started faded", () => alphaWhenShown < 1);
+AddUntilStep("It fades in fully", () => Precision.AlmostEquals(panel.Alpha, 1f));
+```
+
+- Trap: under `dotnet test` the steps run inside the base `TestScene`'s own `[TearDown]`, and NUnit runs a scene's `[TearDown]` before its base class's, so the scene's teardown runs before its steps; in the browser it runs after them. A teardown that deletes a scratch folder deletes it before the steps write to it. Make and remove per-test files in the steps themselves, or use `[OneTimeSetUp]` and `[OneTimeTearDown]` for the whole fixture.
 
 ## Add iPhone, iPad and Android — `--ios`, `--android`, `SakuraApplication.Run`, `SakuraActivity`
 
