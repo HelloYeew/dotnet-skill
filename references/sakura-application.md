@@ -91,7 +91,7 @@ public static class Program
 ```
 
 - `AppType.Application` uses VSync, never busy-spins the update and draw threads, lets the screen sleep, uses the default GC mode and doesn't take audio focus. The default, `Game`, is wrong for a tool: it spins two threads and keeps the display awake.
-- Trap: settings are written with their defaults, so a machine that ran the app before you set `AppType` keeps `FrameLimiter = Limit2x` in its `framework.ini`.
+- Trap: settings are written with their defaults, so a machine that ran the app before you set `AppType` keeps `FrameLimiter = Limit2x` and `LowLatencyMode = On` in its `framework.ini`.
 - An app that makes no sound overrides `CreateAudioManager()` to return `new HeadlessAudioManager()`, so it never opens an audio device.
 - On a phone, a tool also drops the manifest's game category (see `references/sakura-framework.md`, "Add iPhone, iPad and Android").
 
@@ -158,7 +158,7 @@ Cache<ISampleColorProvider>(colors);
 - Controls ask the provider for a role (`Surface`, `Accent`, `Danger`), never for a literal color. Changing the look then means changing one class.
 - Name font roles the same way (`SampleFont.Title`, `Heading`, `Body`, `Caption`, `Value`).
 - Live theme switch: when the theme setting changes, swap the provider's palette, then walk the tree once from the root (`InternalChildren`, recursively) and tell every themeable control to re-read its colors, for example through your own small `IThemeable.ApplyTheme()` interface. Controls don't subscribe to the theme setting themselves.
-- Why walk instead of subscribe: hundreds of controls each binding the same setting means hundreds of listeners on a reactive that lives as long as the app, and `OwnReactive` on a shared reactive would cut everyone's binding (see `references/sakura-framework.md`, "React to value changes").
+- Why walk instead of subscribe: hundreds of controls each binding the same setting means hundreds of listeners on a reactive that lives as long as the app (see `references/sakura-framework.md`, "React to value changes").
 - Apply the theme with duration `0` during load, so nothing animates on first show.
 - Check text contrast against WCAG in a unit test, in both themes, with Sakura's `color.GetContrastRatio(other)` (since `2026.1106.0`).
 

@@ -316,7 +316,7 @@ One component owns the music. Starting gameplay pauses the menu music and gives 
 - Trap: a channel reused after a slowed-down moment keeps its slowed `Frequency`, because a new `TrackClock` only sets tempo. Reset `channel.Frequency.Value = 1` on a channel you didn't create.
 - Trap: a resume countdown that ignores output latency lands off the beat. Add `channel.OutputLatency`.
 - Trap: a background video must follow the music's clock (an `InterpolatingFramedClock` over the playing channel, with `VideoSprite.SyncToClock`), and the outgoing video must stop following it.
-- Trap: a channel's `OnEnd` can run off the update thread. Hop back with `Scheduler.Add`.
+- A channel's `OnEnd` runs on the update thread (the app hands the audio manager its own scheduler), so it can change drawables directly.
 - Trap: keep a song's exact beat length (444.44 ms, not 444.4), or beat-synced effects drift over a song.
 - Trap: looping menu music must handle the end of a track and leave the current song out of a random pick, or the menu goes silent.
 
@@ -326,7 +326,7 @@ Keywords: rhythm game, music game, notes, hit objects, judgement, hit window, ti
 
 On top of the general sections, which all apply: gameplay runs on a `TrackClock`-driven gameplay clock ("Keep music and gameplay in time"), and the parts are the chart (level data), the judgement state, the playfield (the world) and the gameplay screen ("Keep game state apart from what's drawn").
 
-- Judge each press at the time the OS saw it (`GameplayClock.GetTimeAt(e.Timestamp)`, see "Run gameplay on its own clock"). Judging at the frame's time adds up to a whole frame of error, which players feel.
+- Judge each press at the time the OS saw it (`GameplayClock.GetTimeAt(e.Timestamp)`, see "Run gameplay on its own clock"). Judging at the frame's time adds up to a whole frame of error, which players feel. The press handler runs as soon as the press arrives, so start the hit sound there.
 - Hit windows: a fixed set of tiers in milliseconds either side of the note (tightest first, then wider ones, then a miss window), with releases of hold notes judged more leniently (for example 1.5 times wider).
 - Judgement state is arrays indexed by note (`judged[]`, `results[]`), not fields on note drawables. Each frame the playfield binary-searches the notes' start times for what's in view and takes note drawables from a `DrawablePool<T>`. Seeking, replays, headless re-judging and charts with thousands of notes then all work.
 - Input entry points for a lane game: press lane, release lane, plus touch down, slide and flick for phones. Keys, touch and replays all call these.
@@ -417,8 +417,6 @@ public static class GameShaders
 }
 
 // A drawable:
-protected override VertexTopology Topology => VertexTopology.Triangles;
-
 protected override DrawNode CreateDrawNode() => new CustomShaderDrawNode<GlowBlock>(GameShaders.STORE, "glow.frag", nameof(GlowBlock), block);
 ```
 
@@ -483,7 +481,7 @@ AddAssert("landing was felt", () => fakeHaptics.Taps.Count == 1);
 - Every fix comes with a regression test.
 - Run `dotnet test Sample.Game.Tests` before every release, in CI or by hand.
 - Trap: headless audio plays in real time while the test clock runs fast. Seek music to its end instead of waiting for it.
-- Trap: custom shaders draw nothing headless, and text measures 0 wide. Mark those tests `[VisualTestOnly("…")]`.
+- Trap: custom shaders draw nothing headless. Mark those tests `[VisualTestOnly("…")]`.
 - Trap: a sound player that skips missing samples (as one for player-made content must) hides a missing file in tests too. A passing test doesn't prove a sound exists.
 
 ## Ship a game — desktop, Linux, Android, iPhone

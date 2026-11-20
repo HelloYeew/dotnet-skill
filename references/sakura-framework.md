@@ -64,7 +64,7 @@ Keywords: rules, must, always, never, checklist, code review
 
 1. Every `Drawable` subclass is `partial`, so the DI source generator can handle it.
 2. Only the update thread changes drawables. Background work hands its result back with `Scheduler.Add`.
-3. Only the draw thread creates or frees GPU objects, through `host.Renderer.ScheduleToDrawThread`.
+3. Only the draw thread fills or frees GPU memory: free a texture or another GPU object through `host.Renderer.ScheduleToDrawThread`. Making a texture (`Get`, `FromPixelData`, `CreateFromStream`) works from the update thread or a task, and Sakura queues its pixels for the draw thread.
 4. A drawable subscribes to anything that outlives it (settings, shared services) with its own `BindValueChanged`, never `reactive.ValueChanged +=`.
 5. `Cache()` a service before `Add()`-ing anything that resolves it.
 6. Dispose everything you allocate: `Texture`, `ImageRawData`, `NativeMemoryLease`, and native objects from any image library you add (`MagickImage`, OpenCV's `Mat`).
@@ -173,8 +173,8 @@ public static class Program
 
 - The host name (`"sample"`) is the name of the app's data folder: `~/Library/Application Support/sample` on macOS, `%LOCALAPPDATA%\sample` on Windows, `~/.local/share/sample` on Linux. Settings, logs and anything else in `Storage` live there.
 - Trap: renaming it after a release makes every user lose their settings.
-- `HostOptions.AppType` is `Game` unless you say otherwise. A game busy-spins the update and draw threads, runs input and audio at 1000 Hz, limits frames to twice the refresh rate, and keeps the screen awake. A tool sets `AppType = AppType.Application` (VSync, no spinning, the screen can sleep). `host.KeepScreenOn` can still be switched on while a video plays.
-- Trap: settings are written with their defaults, so a machine that ran the app as a `Game` keeps `FrameLimiter = Limit2x` in its `framework.ini` after you switch to `Application`.
+- `HostOptions.AppType` is `Game` unless you say otherwise. A game busy-spins the update and draw threads, runs audio at 1000 Hz, limits frames to twice the refresh rate, turns on low latency mode on the desktop (`LowLatencyMode.On`), and keeps the screen awake. A tool sets `AppType = AppType.Application` (VSync, no spinning, the screen can sleep). `host.KeepScreenOn` can still be switched on while a video plays.
+- Trap: settings are written with their defaults, so a machine that ran the app as a `Game` keeps `FrameLimiter = Limit2x` and `LowLatencyMode = On` in its `framework.ini` after you switch to `Application`.
 - `HostOptions.FriendlyAppName` is the display name. `PortableInstallation = true` keeps all data beside the executable instead (this also happens when a `framework.ini` sits beside it).
 - Sakura targets .NET 11 from `2026.1111.0` on. Every project targets `net11.0` (the shared project, the desktop head and the tests; the phone heads `net11.0-android` and `net11.0-ios`), builds with the .NET 11 SDK, and sets `<LangVersion>15.0</LangVersion>` in `Directory.Build.props`, as the template does. Up to `2026.1106.0`, Sakura targeted .NET 10 (only iOS needed .NET 11).
 - Trap: a `net10.0` project can't use Sakura `2026.1111.0` or later, and nothing says so clearly. Restore succeeds (the package's `buildtransitive` targets count as compatible), then the build fails with `CS0246: The type or namespace name 'Sakura' could not be found`. A `*-*` reference picks the newest release, so it breaks the day one is published. Move the project to `net11.0` when you bump past `2026.1106.0`.
@@ -258,7 +258,7 @@ public partial class SampleApp : App
 
 ## Load bundled files — `Resources/`, `ITextureManager.Get`, `IAudioStore<T>.Get`, `EmbeddedResourceStorage`
 
-Keywords: embedded resource, asset, bundled image, sample image, sound file, font file, video file, Resources folder, GetStream
+Keywords: embedded resource, asset, bundled image, sample image, sound file, font file, video file, Resources folder, GetStream, optional file, missing file, TryGet
 
 Files under the shared project's `Resources/` are embedded, and each kind is found in its own subfolder:
 
@@ -271,6 +271,7 @@ Files under the shared project's `Resources/` are embedded, and each kind is fou
 | `Resources/Fonts/` | `[Resolved] IFontStore fonts` → `fonts.AddFont(...)` (see "Draw shapes, text and icons") |
 | `Resources/Shaders/` | `new CustomShaderStore(new EmbeddedResourceStorage(assembly, "Sample.Application.Resources.Shaders"))` (see "Write a custom shader") |
 
+- For a picture that may not be there (an optional cover, a player's file), `textures.TryGet("cover.png", out var cover)` returns `false` for a missing file and logs nothing. `Get` hands out a white stand-in, and on a GPU logs an error for it. A file that's there but won't decode logs an error either way.
 - To read a bundled file as a stream (to edit a bundled example image, say): `new EmbeddedResourceStorage(typeof(SampleApp).Assembly, "Sample.Application.Resources").GetStream("Textures/example.jpeg")`.
 - A test app can merge test-only resources with the app's through `AdditionalResourceAssemblies`.
 - A game keeps its assets in a separate resource assembly (see `references/sakura-game.md`, "Lay out a game solution").
@@ -366,7 +367,7 @@ Resolve:
 - Optional: `[Resolved(canBeNull: true)] private SettingsOverlay? settings { get; set; }` — the type must be nullable (SFDI0007).
 - Or as loader parameters: `[BackgroundDependencyLoader] private void load(AppHost host, ITextureManager textures)`.
 
-Already cached by `App`, so resolvable anywhere: `AppHost`, `App`, `IWindow`, `Storage` (the app data folder; null under a headless host), `FrameworkConfigManager`, `ITextureManager`, `IImageLoader`, `IFontStore`, `IAudioManager`, `IAudioStore<ITrack>`, `IAudioStore<ISample>`, `VideoStore`. The renderer is not cached: use `host.Renderer`.
+Already cached by `App`, so resolvable anywhere: `AppHost`, `App`, `IWindow`, `Storage` (the app data folder; under a headless host a temporary folder, deleted with the host), `FrameworkConfigManager`, `ITextureManager`, `IImageLoader`, `IFontStore`, `IAudioManager`, `IAudioStore<ITrack>`, `IAudioStore<ISample>`, `VideoStore`. The renderer is not cached: use `host.Renderer`.
 
 - One `[BackgroundDependencyLoader]` per class (SFDI0004). Name it `load` and make it private. A subclass can declare its own.
 - The class and every class it's nested in must be `partial` (SFDI0001, SFDI0002). Without it DI uses the slower reflection fallback.
@@ -386,9 +387,13 @@ Keywords: layout, position, align, center, fill parent, stretch, full width, aut
 - `Margin` is outside, `Padding` inside. `new MarginPadding(all)`, `(vertical, horizontal)` or `(top, right, bottom, left)`.
 - `FlowContainer` stacks its children in the order they were added: `Direction = FlowDirection.Vertical`, `Spacing = new Vector2(0, 8)`, `Alignment`.
 - `GridContainer` for rows and columns: `Content = new[] { new Drawable[] { left, right } }` with `ColumnDimensions = new[] { new Dimension(GridSizeMode.Absolute, 280), new Dimension() }`. Modes: `Distributed`, `Relative`, `Absolute`, `AutoSize`.
+- Trap: a short row under an `AutoSize` column (or a short column under an `AutoSize` row) throws `IndexOutOfRangeException`. Give every row a cell for every column; `null` leaves a cell empty.
+- Trap: drawables `Add()`ed to a `GridContainer` are disposed on its first layout: put them in `Content`. Setting `Content` again, or one cell, leaves the drawables it replaces undisposed, so dispose those yourself.
 - `ScrollableContainer` for content bigger than its area: `Direction = ScrollDirection.Vertical`, `ScrollTo`, `ScrollToEnd`, `ScrollIntoView(drawable)`.
 - `Depth`: higher draws on top. With equal depth, the child added later is on top. This is the opposite of osu!framework.
 - `Masking = true` clips children to the container's bounds. Set it together with `CornerRadius`, `BorderThickness` and `BorderColor`, or `EdgeEffect` for shadows. `CircularContainer` is fully round. `MaskingFade = new MarginPadding { Vertical = 24 }` fades the content out towards the edges instead of cutting it, for a scrolling list.
+- Trap: setting `Masking`, `CornerRadius` or `Blending` after the first draw shows nothing until something else changes. Call `Invalidate(InvalidationFlags.DrawInfo)` after it.
+- Trap: `BorderColor`, an `EdgeEffect`'s `Color` and a `BufferedContainer`'s `BackgroundColor` reach the GPU without the sRGB-to-linear conversion every other color gets, so they show lighter (a gray of 128 as 188). Black, white and colors made only of 0 and 255 are unaffected. For the color you mean, give each channel `(int)MathF.Round(ColorExtensions.SrgbToLinear(value) * 255)`.
 - `ScreenSpaceDrawQuad` gives the true corners of a rotated or sheared drawable.
 - Trap: `Depth` doesn't reorder a `FlowContainer`. Insert children in the order you want them laid out.
 - Trap: `ChildrenOfType<T>()` only looks at direct children. For a deep search, `drawable.Descendants().OfType<T>()` (and `DescendantsAndSelf()`) walk `InternalChildren`, parents first. They arrived in `2026.1106.0`.
@@ -441,7 +446,16 @@ Keywords: rectangle, background, circle, dot, line, polyline, triangle, curve, r
 - Many marks in one draw, instead of one drawable each: `PlotCanvas` (`Clear()`, then `Dot`, `Ring`, `Line` with optional dashes, `Area`, `Box`, `Triangle`). Thousands of marks cost one draw, which suits markers drawn over an image, scatter plots and charts. Example: `Sakura.Framework.Tests/Visuals/Drawables/TestPlotCanvas.cs`.
 - `RingArc` (`Start`, `Progress`, `InnerRadius`, `SmoothEdges`) for progress rings and spinners. `ParticleField` (`Clear()`, then `Add(new Particle(...))` every frame) for particles. `WaveformGraph` draws an audio `Waveform`.
 - Trap: `PlotCanvas` and `ParticleField` fill their parent by default. Set `RelativeSizeAxes = Axes.None` for a fixed size.
+- Trap: a turned `Circle` or `CircularContainer` flattens (at 90 degrees a hairline), inside a turned container too. Keep round shapes unturned.
+- Trap: `Line` and `BezierCurve` keep part of their old color through a recolor or a fade, their own or a parent's. `Path` and `RingArc` recolor fully.
+- Trap: `Line`, `Path` and `BezierCurve` size from their largest point, starting at 0, so a shape with no point above 0 on an axis collapses on it: a line from (0,0) to (120,-80) draws flat. Keep points at 0 or above.
+- Trap: the `Path` drawable clashes with `System.IO.Path` (`CS0104`) in a file that uses both namespaces. Alias one: `using IOPath = System.IO.Path;`.
+- Trap: `Path.ClearVertices()` leaves the old path drawn, and `MiterLimit` doesn't redraw either. Call `path.Invalidate(InvalidationFlags.DrawInfo)` after them.
+- Trap: `Triangle`, `Line`, `Path` and `BezierCurve` never take input, and a `Sprite` with `FillMode = TextureFillMode.Fit` takes none in the empty bands beside its picture. An `Alpha = 0` drawable is hidden and gets no input; a `Color.Transparent` one still does, so an invisible hit area is a transparent `Box`.
 - Color: `Color = Color.DimGray`, `Alpha = 0.5f`, `ColorExtensions.FromHex("#3A7BD5")`, `color.Darken(0.2f)`, `color.Lighten(0.2f)`. Gradient: `ColorInfo = ColorInfo.GradientVertical(top, bottom)`. `color.BlendPerceptually(other, 0.5f)` mixes in Oklab (`OklabColor`), so the middle doesn't go gray or muddy.
+- Trap: `WithAlpha(1)` is the `byte` overload, 1 out of 255, nearly invisible. Write `WithAlpha(1f)` or `WithAlpha((byte)255)`.
+- Trap: a named `Color` never equals one made from numbers, even with the same channels (`Color.Red == Color.FromArgb(255, 0, 0)` is `false`), and a color after a fade or a blend is made from numbers. Compare `ToArgb()`, in tests too.
+- Trap: `IsDark()` and `IsLight()` call `Color.GetBrightness()`, HSL lightness, not luminance: `Color.Blue.IsDark()` is `false`. For a contrast decision use `GetRelativeLuminance()` or `GetContrastRatio`.
 - WCAG contrast: `color.GetContrastRatio(other)` (1 to 21) and `GetRelativeLuminance()`, for a theme provider's own check. They arrived in `2026.1106.0`.
 - Text: `new SpriteText { Text = "Title", Font = FontUsage.Default.With(size: 14, weight: FontWeights.SemiBold) }`. For an ellipsis: `Truncate = true` with `MaxWidth`. For wrapped text and paragraphs use `TextFlowContainer` (`AddText`, `AddParagraph`, `NewLine`). `ScrollingText` scrolls a line that doesn't fit.
 - Style text with `LetterSpacing` (pixels, counted in `MaxWidth`), `Shadow = true` (`ShadowColor`, `ShadowOffset`; a sharp copy, so blur a `BufferedContainer` for a soft one) and `ColorAt` (a color per position, replacing `ColorInfo`). Example: `Sakura.Framework.Tests/Visuals/Text/TestSpriteTextStyles.cs`.
@@ -463,16 +477,16 @@ spinner.Spin(1000);
 ```
 
 - Every transform takes a target, a duration in ms and an optional easing. Duration `0` is instant: use it when applying state during load, so nothing animates on first show (an `updateVisuals(bool instant)` method that passes `0` when `instant`).
-- `Then(delay)` and `Wait(delay)` do the same thing: the next transform starts `delay` ms after the running ones finish. `Loop()` repeats the latest transforms.
+- On a drawable, `Then(delay)` and `Wait(delay)` do the same thing: the next transform starts `delay` ms after the running ones finish. Only that next transform waits: `box.FadeOut(200).Then().ScaleTo(2f, 200).MoveToX(100, 200)` grows after the fade but moves during it. For several steps, use `TransformSequence()`, where `Then()` holds back everything after it. `Loop()` repeats the latest transforms.
 - `ClearTransforms()` stops running animations; `FinishTransforms()` jumps them to the end.
 - `Easing.OutQuint` is my standard for UI motion. `CubicBezierEasing` and `SpringEasing` also work wherever an easing is accepted.
 - A container's auto-size can animate: `AutoSizeDuration`, `AutoSizeEasing`.
 - Transforms run on the drawable's clock, on the update thread. Starting one from a background thread breaks rule 2.
-- Trap: Sakura retargets a transform that's still running instead of starting it over. Call `ClearTransforms()` before applying the same transition again.
+- Trap: Sakura retargets a transform that's still running instead of starting it over, keeping the old start value, so the value jumps: a hover fade undone halfway snaps straight back. Call `ClearTransforms()` before applying the same transition again.
 
 ## Handle mouse, keyboard and dropped files — `OnClick`, `OnHover`, `OnDragStart`, `OnKeyDown`, `OnDragDropFile`
 
-Keywords: input, mouse, click, double click, right click, mouse down, hover, drag, pan, scroll, wheel, trackpad, keyboard, key press, key repeat, shortcut, hotkey, modifier, Ctrl, Cmd, drop file, drag and drop, focus, tab order, block input, click-through, ReceivePositionalInputAt, HandlePositionalInput, key binding, rebind, gamepad, controller, OnGamepadButtonDown
+Keywords: input, mouse, click, double click, right click, mouse down, hover, drag, pan, scroll, wheel, trackpad, keyboard, key press, key repeat, shortcut, hotkey, modifier, Ctrl, Cmd, drop file, drag and drop, focus, tab order, block input, click-through, ReceivePositionalInputAt, HandlePositionalInput, key binding, rebind, gamepad, controller, OnGamepadButtonDown, focus ring, focus-visible, IsFocusVisible, FocusSource, press latency
 
 Override the handler on the drawable that should react. Return `true` when you handled the event: it stops there. Return `false` to let it carry on to what's behind.
 
@@ -480,8 +494,8 @@ Override the handler on the drawable that should react. Return `true` when you h
 | --- | --- |
 | `OnClick`, `OnDoubleClick`, `OnMouseDown`, `OnMouseUp` | `MouseButtonEvent`: `Button`, `ScreenSpaceMousePosition` |
 | `OnHover`, `OnHoverLost`, `OnMouseMove` | `MouseEvent`: `ScreenSpaceMousePosition`, `Delta` |
-| `OnDragStart`, `OnDrag`, `OnDragEnd` | Return `true` from `OnDragStart` to capture the drag. Every move then goes to `OnDrag` until release, even outside the drawable. |
-| `OnScroll` | `ScrollEvent`: `ScrollDelta`, `AbsoluteDelta` (macOS trackpads scroll one to one) |
+| `OnDragStart`, `OnDrag`, `OnDragEnd` | A left press that a drawable takes (`true` from `OnMouseDown`, `OnClick` or `OnDragStart`) captures the drag: every move then goes to its `OnDrag` until release, even outside it. |
+| `OnScroll` | `ScrollEvent`: `ScrollDelta`, `AbsoluteDelta` (macOS trackpads scroll one to one). No `Timestamp`, unlike key, button and touch events. |
 | `OnGamepadButtonDown`, `OnGamepadAxisMotion`, `OnGamepadConnected` | `GamepadButtonEvent`, `GamepadAxisEvent` |
 | `OnTouchDown`, `OnTouchMove`, `OnTouchUp` | `TouchEvent` (see "Handle phones") |
 | `OnKeyDown`, `OnKeyUp` | `KeyEvent`: `Key`, `Modifiers`, `IsRepeat`, `ControlPressed` |
@@ -499,14 +513,20 @@ public override bool OnDragDropFile(DragDropFileEvent e)
 ```
 
 - Convert a pointer position into a drawable's coordinates with `ToLocalSpace(e.ScreenSpaceMousePosition)`.
+- In multi-threaded execution (the default), a press or release (key, mouse button, touch, gamepad button) is handled as soon as it arrives: it wakes the update thread between updates, with the tree and clocks as the last update left them, and what it schedules runs at the next update. Moves, scrolls and text wait for the next update. Single-threaded, all input is handled at the start of the next update. For a press's exact time, read its `Timestamp` (see `references/sakura-game.md`, "Run gameplay on its own clock").
 - Keyboard events go to the focused drawable first, then to the rest. Put a screen-wide shortcut in the screen's `OnKeyDown` and an app-wide one in the App's. Check `!e.IsRepeat` for one-shot actions. A key repeat only goes to the drawable that took the first press.
 - Note: an `OnKeyDown` (or `OnKeyUp`) override on the `App` itself calls `base.OnKeyDown(e)` first, and handles the key only when that returns `false`. Why: `App.OnKeyDown` is what dispatches every key. It records the press in the `InputManager`, runs the framework's Ctrl+F shortcuts, and passes the key to the focused drawable and then the key queue. An override that skips `base` cuts all of that off, so no other drawable gets keys and the debug shortcuts stop. (Overrides on other drawables don't need this.)
-- Trap: `KeyModifiers` only has `Control`, `Shift` and `Alt`. Cmd on macOS isn't reported as a modifier, so shortcuts are Ctrl+… on every platform.
-- Trap: the framework takes Ctrl+F1, F2, F3, F6, F7, F9, F10, F11, F12, Ctrl+Shift+L and plain F11 (see "Debug a running app"), before the focused drawable sees them. macOS also keeps Ctrl+F3 to Ctrl+F8 for itself unless its keyboard shortcuts are turned off.
-- Trap: returning `true` from `OnHover` un-hovers the parent, and `TooltipContainer` only searches hovered drawables, so every tooltip inside goes dead. Controls inside a tooltip area return `false` from `OnHover`.
+- Trap: `KeyModifiers` only has `Control`, `Shift` and `Alt`. Cmd on macOS isn't reported as a modifier, so shortcuts are Ctrl+… on every platform. Cmd itself reads as `Key.WinLeft`/`Key.WinRight` in `InputManager.CurrentState`, and key bindings can use `InputKey.Super`.
+- Trap: the framework takes Ctrl+F1, F2, F3, F6, F7, F9, F10, F11 and Ctrl+Shift+L (see "Debug a running app") before the focused drawable sees them. Plain F11 (window mode) and Ctrl+F12 (data folder) run after the app has had the key, even when a drawable took it. macOS also keeps Ctrl+F3 to Ctrl+F8 for itself unless its keyboard shortcuts are turned off.
+- Trap: returning `true` from `OnHover` un-hovers the drawable's parents, and `TooltipContainer` skips un-hovered drawables, so a container's tooltip doesn't show while the pointer is on a hover-taking control inside it (a button). The control's own tooltip does. Put the tooltip on the control, or have controls inside a tooltip area return `false` from `OnHover`.
 - To make an area ignore the pointer without blocking hover, override `ReceivePositionalInputAt(Vector2 screenSpacePos)` (for example, a canvas partly covered by floating panels). `HandlePositionalInput` / `HandleNonPositionalInput` switch input off for a whole subtree.
 - Focus and Tab: implement `ITabStop` (`CanBeTabbedTo`, `TabOrder`) and override `AcceptsFocus`. The built-in controls already do. A dialog that keeps Tab inside itself implements `ITabStopScope`, as `FocusedOverlayContainer` does.
+- Trap: Tab only moves focus when no drawable takes the key. A dialog of your own that takes every key in `OnKeyDown` moves focus itself on Tab: `GetContainingInputManager()?.MoveFocusToNextTabStop((e.Modifiers & KeyModifiers.Shift) > 0)`. `FocusedOverlayContainer` already does.
+- Draw a focus ring only while `IsFocusVisible` is true (as CSS `:focus-visible`): true when a key or gamepad button moved focus, false when a mouse, touch or pen press did. `OnFocus(FocusEvent e)` also gets `e.Source` and `e.IsFocusVisible`. A text box shows focus however it arrived.
 - User-rebindable shortcuts: a `KeyBindingContainer<TAction>` with `DefaultKeyBindings`, handlers implementing `IKeyBindingHandler<TAction>` (`OnPressed`, `OnReleased`), saved by `KeyBindingStore<TAction>`, edited in a `KeyBindingPanel<TAction>`. Example: `Sakura.Framework.Tests/Visuals/Input/TestKeyBindingContainer.cs`. A simple tool can handle `OnKeyDown` directly; a game keeps one app-wide container for global keys and one per screen for that screen's actions.
+- Trap: with the default `SimultaneousMode`, `None`, a new press lets go of the action held: hold Left, press Jump, and Left stops. A game sets `SimultaneousBindingMode.All`. `Unique` lets go too soon (it skips an action's second binding).
+- Trap: key bindings fire while a text box has focus, so typing a name moves the player. In the container's `OnKeyDown`, return `false` while `GetContainingInputManager()?.FocusedDrawable is TextBox`.
+- Trap: each `KeyBindingStore` writes its whole file with only its own actions, so give each store a file of its own. `KeyCombination.Parse` takes Sakura's names (`"Control+S"`) and silently drops one it doesn't know: `Parse("Ctrl+S")` is S alone. A `KeyBindingPanel` lays out its slots (`SlotsPerAction`) right to left at a fixed width.
 - Gamepads raise their own events. Use them for things like switching on-screen hints to gamepad buttons and waking from idle (gameplay on a gamepad: see "Not covered yet").
 
 ## Show tooltips and change the cursor — `IHasTooltip`, `TooltipContainer`, `IHasCursor`, `CursorFeedbackContainer`
@@ -514,6 +534,7 @@ public override bool OnDragDropFile(DragDropFileEvent e)
 Keywords: tooltip, hint, help text, hover text, cursor, mouse pointer, hand cursor, text cursor, grab, grabbing, busy cursor, wait cursor, not allowed
 
 - Any drawable can implement `IHasTooltip` (`string? TooltipText`) and `IHasCursor` (`CursorState Cursor`).
+- Trap: Sakura's buttons set no cursor shape. For a pointing hand, implement `IHasCursor` on your button.
 - `CursorState`: `Default`, `Pointer`, `Text`, `Wait`, `Crosshair`, `NotAllowed`, `Grab`, `Grabbing`. Compute it from state, e.g. `public CursorState Cursor => Enabled.Value ? CursorState.Pointer : CursorState.Default;`.
 - Add exactly one `TooltipContainer` and one `CursorFeedbackContainer` near the root, last in `App.Load`, so tooltips draw on top of everything.
 - Trap: two `CursorFeedbackContainer`s fight over the OS cursor every frame. A `TooltipContainer` only covers its parent's descendants, so one added inside a screen misses everything else.
@@ -521,14 +542,15 @@ Keywords: tooltip, hint, help text, hover text, cursor, mouse pointer, hand curs
 
 ## Use the built-in controls — `Button`, `Checkbox`, `SliderBar<T>`, `TextBox`, `BasicDropdown<T>`, `ColorPicker`
 
-Keywords: button, checkbox, toggle, switch, slider, number input, text box, text field, input field, dropdown, select, combo box, color picker, key binding panel, themed control, disabled, enabled, Current, Action
+Keywords: button, checkbox, toggle, switch, slider, number input, text box, text field, input field, dropdown, select, combo box, color picker, key binding panel, themed control, disabled, enabled, Current, Action, disabled button
 
 - The abstract bases carry the behavior (click, keyboard activation, focus, Tab, drag): `Button`, `Checkbox`, `SliderBar<T>`, `TextBox`, `ColorPicker`, `KeyBindingPanel<T>`. The `Basic*` versions add a placeholder look: `BasicButton`, `BasicCheckbox`, `BasicSliderBar<T>`, `BasicTextBox`, `BasicDropdown<T>`, `BasicColorPicker`, `BasicKeyBindingPanel`.
-- For a product, subclass the abstract base and draw your own look (`SampleButton : Button`, `SampleCheckbox`, `SampleSlider`, `SampleTextBox`). Override the hooks: `OnHovered()`, `OnHoverLost()`, `OnEnabledChanged(bool)`, `OnFocusGained()`, `OnFocusLost()`, `OnCheckChanged(bool)`, `OnValueChanged(T)`.
+- For a product, subclass the abstract base and draw your own look (`SampleButton : Button`, `SampleCheckbox`, `SampleSlider`, `SampleTextBox`). Override the hooks: `OnHovered()`, `OnHoverLost()`, `OnEnabledChanged(bool)`, `OnFocusGained()`, `OnFocusLost()`, `OnCheckChanged(bool)`, `OnValueChanged(T)`. In `OnFocusGained()`, show the ring only when `IsFocusVisible`.
+- A `Button` (any `ClickableContainer`) acts on mouse-down, not release, and for any mouse button: a right click, or a phone's long press, runs its `Action` too. A disabled one doesn't take a press: it reaches what's behind, so a drag that starts on a disabled row still scrolls its list.
 - Values are reactives you can bind:
   - `Checkbox.Current`: `ReactiveBool`
   - `SliderBar<T>.Current`: `ReactiveNumber<T>`, with `MinValue`, `MaxValue`, `Step`, `KeyboardStep`, `DecimalPlaces`
-  - `TextBox.Text`: `Reactive<string>`, plus `OnCommit`, `PlaceholderText`, `LengthLimit`, `SelectAll()`, and `InputType` for the phone keyboard
+  - `TextBox.Text`: `Reactive<string>`, plus `OnCommit`, `PlaceholderText`, `LengthLimit`, `SelectAll()`, and `InputType` for the phone keyboard. Trap: `LengthLimit` counts `char`s, so it can split an emoji (two `char`s), and a paste goes straight into `Text` without `OnTextInput`: check input in `Text`'s value changes.
   - `BasicDropdown<T>.Current` with `Items`
   - `ColorPicker.Current`: `Reactive<Color>`
 - `Button.Action = () => …` sets what a click does.
@@ -601,13 +623,13 @@ protected override void LoadComplete()
 - Trap: `setting.ValueChanged += …` from a drawable keeps the drawable and its whole subtree alive for as long as the app runs, because a config reactive lives that long. It's only safe between objects that live equally long (the App and its own config).
 - `a.BindTo(b)` keeps `a` in sync with `b`. `target.BindBothWaysTo(source)` (namespace `Sakura.Framework.Extensions.ReactiveExtensions`) syncs both ways and takes the source's value first: use it for control ↔ setting.
 - A control that exposes a reactive for others to bind (its `Current`) calls `OwnReactive(Current)`, so those bindings are cut when it's disposed.
-- Trap: `OwnReactive` unbinds every listener of that reactive. Never use it on a shared reactive. That's why a live theme switch walks the tree instead of subscribing every control (see `references/sakura-application.md`, "Theme the whole app from one provider").
+- Trap: `OwnReactive` cuts only that reactive's own bindings to what it was bound to (`BindTo`). Its `ValueChanged` handlers stay, and so does the other half of a `BindBothWaysTo` (the source's binding to it): undo that with `UnbindFrom` in `Dispose`. Own only a reactive the drawable made; on a shared one, the cut breaks that reactive's bindings for every user. A live theme switch walks the tree instead of subscribing every control (see `references/sakura-application.md`, "Theme the whole app from one provider").
 - Trap: applying the same state twice (a screen re-applied, a control rebuilt) stacks a second set of `ValueChanged` handlers. Unbind everything from the previous apply first.
 - Trap: `ReactiveFloat`'s constructor takes an `int`, so `new ReactiveFloat(0.5f)` doesn't compile. Use `new ReactiveNumber<float>(0.5f)`.
 
 ## Save user settings — `ConfigManager<TEnum>`, `[SettingSource]`, `FrameworkConfigManager`
 
-Keywords: settings, preferences, options, config, ini file, persist, save, load, restore, theme setting, window size, renderer, frame limiter, volume, InMemoryConfigManager, Flush
+Keywords: settings, preferences, options, config, ini file, persist, save, load, restore, theme setting, window size, renderer, frame limiter, volume, InMemoryConfigManager, Flush, low latency mode, variable refresh, G-SYNC, FreeSync, VRR
 
 ```csharp
 [SettingSource("sample.ini")]
@@ -635,7 +657,7 @@ public class SampleConfigManager : ConfigManager<SampleSetting>
 - Give every setting a doc comment saying what it does, and keep `MIN_`/`MAX_` constants for ranged values in the config manager.
 - Trap: a change in the last 200ms before quitting is lost unless you call `config.Flush()` on shutdown. Override `Dispose` in your App (see "Write the App class"); on desktop the framework only flushes its own `framework.ini`.
 - A `null` storage keeps everything in memory. Tests use that so they never read or overwrite the developer's real settings. `InMemoryConfigManager<T>` does the same.
-- The framework's own settings (renderer, frame limiter, window mode and size, volumes, audio device) are in `FrameworkConfigManager` under `FrameworkSetting`. Resolve it to show them in your settings screen.
+- The framework's own settings (renderer, frame limiter, low latency mode, window mode and size, volumes, audio device) are in `FrameworkConfigManager` under `FrameworkSetting`. Resolve it to show them in your settings screen. Label two choices for the player: `FrameSync.VariableRefresh` is for G-SYNC, FreeSync and ProMotion displays (it tears on a fixed-rate one), and `LowLatencyMode` (Off, On, Boost) works on Direct3D 11 and Vulkan only.
 - Use an enum value for anything with fixed choices (`SampleTheme.Dark`), not a string.
 
 ## Move between screens — `ScreenStack`, `Screen`, `Push`, `Exit`, `OnEntering`, `OnExiting`
@@ -666,7 +688,7 @@ public partial class ConfirmDialog : FocusedOverlayContainer
 
 - `VisibilityContainer`: implement `PopIn()` and `PopOut()` with transforms, then call `Show()`, `Hide()` or `ToggleVisibility()` and read `State`. It starts hidden (`StartHidden`).
 - `OverlayContainer` also blocks mouse input to whatever is behind it while visible (`BlockPositionalInput`).
-- `FocusedOverlayContainer` also takes focus, keeps Tab inside, blocks keyboard input to the rest of the app, and closes on Escape (`CloseOnEscape`). Use it for modal dialogs and a settings overlay.
+- `FocusedOverlayContainer` also takes focus when shown and, while shown, keeps Tab and Shift+Tab among the controls inside it, keeps keys from the rest of the app while focus is inside it, and closes on Escape (`CloseOnEscape`). Use it for modal dialogs and a settings overlay.
 - Add overlays to the App root above the screen stack, and cache any a screen needs to open.
 
 ## Run slow work without freezing the UI — `Task.Run`, `Scheduler.Add`, `Scheduler.AddDelayed`, `LoadComponentAsync`
@@ -741,47 +763,43 @@ Keywords: image, picture, photo, display image, texture, sprite, pixels, bitmap,
 
 - A bundled image: `sprite.Texture = textures.Get("logo.png")` (from `Resources/Textures`). Decode it smaller with `textures.Get("photo.jpeg", ImageLoadOptions.MaxDimension(512))` or `ImageLoadOptions.FillTarget(size)`.
 - `sprite.FillMode`: `TextureFillMode.Stretch`, `Fit`, `Fill` or `Tile`.
-- Pixels you made yourself (8-bit RGBA, row by row) become a texture on the draw thread:
+- Pixels you made yourself (8-bit RGBA, row by row) become a texture from the update thread or a task: `FromPixelData` hands back the texture at once and queues the pixels for the draw thread.
 
 ```csharp
-[Resolved]
-private AppHost host { get; set; } = null!;
-
 [Resolved]
 private ITextureManager textures { get; set; } = null!;
 
 private void upload(ImageRawData pixels, string name)
 {
-    host.Renderer.ScheduleToDrawThread(() =>
+    Texture texture;
+
+    try
     {
-        Texture texture;
+        texture = textures.FromPixelData(pixels.Width, pixels.Height, pixels.Data);
+        texture.Name = name;
+    }
+    finally
+    {
+        // FromPixelData has copied the pixels.
+        pixels.Dispose();
+    }
 
-        try
-        {
-            texture = textures.FromPixelData(pixels.Width, pixels.Height, pixels.Data);
-            texture.Name = name;
-        }
-        finally
-        {
-            // FromPixelData has copied the pixels.
-            pixels.Dispose();
-        }
-
-        Scheduler.Add(() => showWhenUploaded(texture));
-    });
+    Scheduler.Add(() => showWhenUploaded(texture));
 }
 ```
 
 - The GPU upload itself is spread over the following frames within a per-frame byte budget.
-- Trap: showing a texture before `texture.IsAvailable` is true draws garbage. Keep the old texture on screen and swap once the new one is available (check `IsAvailable` in `Update`).
-- To free a replaced texture, wait a little and dispose it on the draw thread. A draw node from a frame or two ago, and Metal's own frame pipeline, may still be drawing it:
+- Trap: a texture shown before `texture.IsAvailable` is true draws white. Keep the old texture on screen and swap once the new one is available (check `IsAvailable` in `Update`).
+- Free a replaced texture on the draw thread, from a later update frame than the one that stopped showing it: snapshots made before that frame may still be drawn. On a running clock any delay above zero does it, since a drawable's clock doesn't move during a frame:
 
 ```csharp
-Scheduler.AddDelayed(() => host.Renderer.ScheduleToDrawThread(oldTexture.Dispose), 150);
+Scheduler.AddDelayed(() => host.Renderer.ScheduleToDrawThread(oldTexture.Dispose), 1);
 ```
 
+- Trap: the texture cache and the atlas aren't locked. Call `textures.Get` and `TryGet`, and `FromPixelData` with a cache key, from one thread at a time: a `load` that `LoadComponentAsync` runs on the thread pool races the update thread's. `CreateFromStream` is safe from several threads.
+
 - Trap: call `Texture.Dispose()`, never `BackendTexture.Dispose()`. The second frees the GPU memory but leaves the texture registered, so the texture viewer and every memory counter report it as alive forever.
-- Pass no `cacheKey` to `FromPixelData` for a texture you replace often. With a key, the manager releases the previous texture on the next frame, which is too early for the delayed swap above.
+- Pass no `cacheKey` to `FromPixelData` for a texture you replace often. With a key, the manager releases the previous texture on the next frame, which is too early for the swap above.
 - Set `texture.Name`. The texture viewer (Ctrl+F3) is useless with anonymous textures.
 - A texture shown in many places at once (thumbnails, cover art): `AcquireSharedTexture(cacheKey, …)` and `ReleaseSharedTexture(cacheKey)`.
 - Decoding and processing big images (color management, RAW, memory): `references/sakura-application.md`.
@@ -790,8 +808,8 @@ Scheduler.AddDelayed(() => host.Renderer.ScheduleToDrawThread(oldTexture.Dispose
 
 Keywords: blur, frosted glass, grayscale, effect, glow, shadow, drop shadow, framebuffer, render to texture, cache drawing, offscreen
 
-- `BufferedContainer` draws its children into an offscreen buffer first: `BlurSigma = new Vector2(8)`, `GrayscaleStrength`, `EffectColor`, `DrawOriginal`. `CacheDrawnFrameBuffer = true` reuses the result until `ForceRedraw()`, which helps with complex content that rarely changes.
-- Shadows and glow on a container: `EdgeEffect` with `Masking = true`.
+- `BufferedContainer` draws its children into an offscreen buffer first: `BlurSigma = new Vector2(8)`, `GrayscaleStrength`, `EffectColor`, `DrawOriginal`. `CacheDrawnFrameBuffer = true` keeps the buffer between frames and redraws it by itself when anything in the subtree changes, which helps with complex content that rarely changes. `ForceRedraw()` is only for a change Sakura can't see, such as new pixels uploaded into a texture a child shows.
+- Shadows and glow on a container: `EdgeEffect`. It doesn't need `Masking`.
 - Buffers cost GPU memory (`NativeMemoryCategory.FrameBuffers`). Don't wrap something that changes every frame.
 
 ## Write a custom shader — `CustomShaderDrawNode<TBlock>`, `CustomShaderStore`, `ShaderChecks`, GLSL 450
@@ -829,7 +847,7 @@ void main()
    - Your uniform blocks go in `set = 0`, bindings 5 to 7 (0 to 4 are the framework's), with `std140`, at most 256 bytes each. Textures are `set = 1`, bindings 0 to 3. Push constants and storage buffers are rejected.
    - Don't redeclare what `sh_Custom.glsl` declares: `v_Color`, `v_TexCoords` and the clip inputs, and `FragColor`.
    - Everything in the shader is linear light: vertex colors arrive linear and the framebuffer converts back to sRGB. Pass colors in linear (`ColorExtensions.SrgbToLinear`), or `pow(c, vec3(2.2))` a color typed into the shader.
-   - Shared code for all of an app's shaders goes in its own include that includes `sh_Custom.glsl` (for example `sample.glsl`, with the app's colors and a `writeLight` helper for additive light).
+   - Shared code for all of an app's shaders goes in its own include that includes `sh_Custom.glsl` (for example `sample.glsl`, with the app's colors and a `writeLight` helper for additive light). A shader then includes only that one: an include has no guard, and `sh_Custom.glsl` pasted twice fails with a list of redefinitions.
 
 2. Keep one `CustomShaderStore` for the app's shaders. It compiles each shader once per renderer and recompiles if the renderer is replaced:
 
@@ -858,8 +876,8 @@ public partial class GainBox : Drawable
         {
             gain = value;
 
-            // The draw node only re-reads the block after an invalidation.
-            Invalidate(InvalidationFlags.DrawInfo);
+            // The draw node only re-reads the block after an invalidation. Color is the cheapest one that does it.
+            Invalidate(InvalidationFlags.Color);
         }
     }
 
@@ -890,7 +908,8 @@ public partial class GainBox : Drawable
 public void TestShaderBuilds(string shader) => Assert.That(ShaderChecks.Problems(AppShaders.STORAGE, shader), Is.Empty);
 ```
 
-- A drawable that isn't a plain quad overrides `Topology` (for example `VertexTopology.Triangles`) and `GenerateVertices`, and can put its own values in each vertex's `TexCoords` for the shader.
+- A drawable that isn't a plain quad overrides `GenerateVertices`, and can put its own values in each vertex's `TexCoords` for the shader. `CustomShaderDrawNode` ignores `Topology`: exactly four vertices draw as a quad, any other count as a triangle list.
+- Trap: a uniform block name that doesn't match the shader's is ignored without an error on every renderer, and `ShaderChecks` passes a shader that never calls `writeFragment`. Look at the result on screen, not only at the tests.
 - More than one block, or a texture: subclass `CustomShaderDrawNode`, copy what it needs in `ApplyState`, and upload in `SetUniforms(IShader shader)`. For a texture, the framework's own pattern is `shader.SetUniform("u_Texture", 0); texture.BackendTexture?.Bind(0);` with `layout(set = 1, binding = 0) uniform sampler2D u_Texture;`, and a check for `texture.IsAvailable`. No test covers a textured custom shader yet: check it on every renderer.
 - Your own vertex shader: pass its path as the last argument. It must output what `shader.vert` outputs, at locations 0 to 8.
 - Test on every renderer the app ships with. Switch with `FrameworkSetting.RendererType` (`Metal`, `Direct3D11`, `Vulkan`, `OpenGL`) in `framework.ini`. Vulkan is first on Linux and the fallback after Direct3D 11 on Windows, and the only renderer on Android.
@@ -938,11 +957,11 @@ private void pickImage()
 - Extensions in a filter have no leading dot.
 - The app's own files (settings, logs, caches, exports it keeps): resolve `Storage`.
   - `GetStream(path, FileAccess.Write, FileMode.Create)` to write, `GetStream(path)` to read
-  - `CreateFileSafely(path)` to replace a file without a half-written result if the app crashes
+  - `CreateFileSafely(path)` to replace a file without a half-written result if the app stops mid-write. Trap: disposing its stream always puts the new file in place, also when your code threw halfway (a `using` disposes it). Work out everything first, then write it in one go
   - `GetStorageForDirectory("exports")`, `GetFullPath(path)`, `Exists(path)`, `GetFiles(path)`
-  - Logs go to `logs/` inside it.
+  - Logs go to `logs/` inside it on the desktop (phones: see "Log and handle errors").
 - Hand off to the operating system: `host.OpenFileExternally(path)`, `host.PresentFileExternally(path)` (reveal in Finder or Explorer), `host.OpenUrlExternally(url)`.
-- Trap: `Storage` is `null` under a headless host, which tests use. Accept `Storage?` wherever you take one (the config manager above does).
+- Under a headless host, `Storage` is a temporary folder of its own, deleted with the host, so a test never touches the real data folder. Code that a test builds without a host can still take `Storage?`: `null` keeps everything in memory (the config manager above does).
 
 ## Play sounds and video — `IAudioStore<ISample>`, `IAudioStore<ITrack>`, `VideoSprite`
 
@@ -958,7 +977,7 @@ Keywords: decoder, built-in decoder, sound, audio, sample, sound effect, beep, m
 - Zero-copy video (`FrameworkSetting.VideoZeroCopy`, on by default) samples the hardware decoder's frame on the GPU instead of reading it back and uploading it. Whether a frame qualifies is decided per frame by the renderer:
   - Metal (macOS, iOS): VideoToolbox frames that are 8-bit 4:2:0 (NV12, the usual H.264 and HEVC). 10-bit HDR takes the copy path.
   - Direct3D 11: 8-bit D3D11 frames; 10-bit (P010) takes the copy path.
-  - Vulkan (Linux, Android, Windows fallback): NV12 frames decoded on the renderer's own device.
+  - Vulkan (Linux, Windows fallback): NV12 frames decoded on the renderer's own device. Android always copies: MediaCodec decodes into ordinary memory.
   - OpenGL (the fallback everywhere, macOS included) and headless: never.
 - A frame that can't go zero-copy takes the copy path without any error, so leave the setting on. It needs hardware decoding (`FrameworkSetting.HardwareAcceleration`). To see which path a video takes: Ctrl+F2 → Video → "Frame Format" ends in "(zero-copy)" when it's active.
 - Audio output latency is `FrameworkSetting.AudioDeviceBufferFrames`, the device buffer asked of SDL. The default depends on the platform: 128 frames on the desktop (about 2.7 ms at 48 kHz), 256 on iOS, and 0 on Android, which means "the device's own burst size" and keeps the stream on the low-latency path. Values are clamped to 32–8192.
@@ -973,12 +992,12 @@ Keywords: log, logging, debug output, console, error, exception, crash, stack tr
 - Exceptions: `Logger.Error("Saving the result failed", ex)` logs the message plus the full exception and stack trace. Keep context in the message: `Logger.Error($"Failed to load image from {path}", ex)`.
 - Trap: `Logger.Error($"Saving failed: {ex.Message}")` throws the stack trace away.
 - Trap: `catch (Exception) { }` that skips a bad file without logging makes it vanish with no trace. Skip it if you must, but log it.
-- Logs go to the console and to `logs/` in the app data folder.
-- `host.ExceptionThrown += ex => …` sees unhandled exceptions. Returning `true` keeps the app running; only do that for errors you know are safe to ignore.
+- Logs go to the console and to a `logs` folder: in the app data folder on the desktop, `Library/Caches/logs` on iOS (beside the app's shared files with `UIFileSharingEnabled`), and the app's folder that isn't backed up on Android (beside the shared files with `SharesFiles`).
+- `host.ExceptionThrown += ex => …` runs for an exception nothing caught, on the thread that threw, after Sakura has logged it: the last chance to save what you can. Return `false`. Returning `true` doesn't keep the app running (the process still ends); it only skips Sakura's own shutdown of the log.
 
 ## Debug a running app — draw visualizer, statistics, texture viewer
 
-Keywords: debug, debugging, inspect, inspector, draw tree, hierarchy, FPS, frame time, display latency, frame limiter, performance, slow, memory, VRAM, texture leak, statistics, profiler, overlay, log overlay, safe area preview, storage folder, renderer crash, GlobalStatistics, Name
+Keywords: debug, debugging, inspect, inspector, draw tree, hierarchy, FPS, frame time, display latency, frame limiter, performance, slow, memory, VRAM, texture leak, statistics, profiler, overlay, log overlay, safe area preview, storage folder, renderer crash, GlobalStatistics, Name, low latency, Reflex, Anti-Lag
 
 | Keys | Tool |
 | --- | --- |
@@ -989,12 +1008,12 @@ Keywords: debug, debugging, inspect, inspector, draw tree, hierarchy, FPS, frame
 | Ctrl+F7 | Switch between multi-threaded and single-threaded execution |
 | Ctrl+F9 | Audio mixer |
 | Ctrl+F10 | Cycle the frame limiter |
-| Ctrl+F11 | FPS graph: hidden, minimal, compact, expanded. Shows display latency, the renderer and the audio backend. |
+| Ctrl+F11 | FPS graph: hidden, minimal, compact, expanded. Shows display latency, the renderer (with the low latency provider while that mode is on: Reflex, Anti-Lag 2 or GPU wait) and the audio backend. |
 | Ctrl+F12 | Open the app data folder |
 | Ctrl+Shift+L | Log overlay |
 | F11 | Window mode |
 
-- On a phone, a four-finger tap opens them in a Debug build.
+- In a Debug build, a four-finger tap on a touchscreen (a phone's, or a computer's; a Mac trackpad isn't one) opens them, with a low latency mode switch: the only built-in way to change that mode while the app runs.
 - A renderer that crashed during startup is moved to the back of the order and recorded in `renderer-crashes.txt` beside `framework.ini`. It's tried after the others until it starts, or until it's chosen in the settings again.
 - `DrawHierarchyUtils.PrintAppHierarchy(app)` logs the whole tree, for when the visualizer can't be opened.
 - Set `Name` on important drawables and textures so you can find them in these tools.
@@ -1025,7 +1044,7 @@ protected override void LoadComplete()
 
 ## Write tests — `TestScene`, `ManualInputManagerTestScene`, `TestBrowserApp`, `[VisualTestOnly]`
 
-Keywords: test, testing, unit test, visual test, NUnit, headless, test browser, steps, AddStep, AddAssert, AddUntilStep, AddWaitStep, step delay, timing, fade, transition, animation, TearDown, simulate click, simulate keyboard, InputManager, MoveMouseTo, CI, dotnet test
+Keywords: test, testing, unit test, visual test, NUnit, headless, test browser, steps, AddStep, AddAssert, AddUntilStep, AddWaitStep, step delay, timing, fade, transition, animation, TearDown, simulate click, simulate keyboard, InputManager, MoveMouseTo, CI, dotnet test, NUnit 5, NU1605, TearDown order, headless text
 
 The test project (`Sample.Application.Tests` or `Sample.Game.Tests`) is a runnable app as well as an NUnit project:
 
@@ -1036,10 +1055,10 @@ The test project (`Sample.Application.Tests` or `Sample.Game.Tests`) is a runnab
   <IsPackable>false</IsPackable>
 </PropertyGroup>
 <ItemGroup>
-  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-  <PackageReference Include="NUnit" Version="4.6.1" />
-  <PackageReference Include="NUnit3TestAdapter" Version="6.2.0" />
-  <PackageReference Include="NUnit.Analyzers" Version="4.14.0" />
+  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
+  <PackageReference Include="NUnit" Version="5.0.0" />
+  <PackageReference Include="NUnit3TestAdapter" Version="6.3.1" />
+  <PackageReference Include="NUnit.Analyzers" Version="4.15.0" />
 </ItemGroup>
 <ItemGroup>
   <ProjectReference Include="..\Sample.Application\Sample.Application.csproj" />
@@ -1072,6 +1091,7 @@ public class SampleTestApp : TestBrowserApp
 
 - `dotnet run --project Sample.Application.Tests` opens the visual test browser: pick a scene, watch its steps run, and click through them by hand.
 - `dotnet test` runs the same scenes headless as NUnit tests, at 2× clock speed (`TestScene.HeadlessClockRate`).
+- Trap: Sakura `2026.1119.0` and later reference NUnit 5.0.0, so a test project that pins NUnit 4.x fails to restore with `NU1605: Detected package downgrade: NUnit from 5.0.0 to 4.6.1`. Use the versions above.
 - Folders: `Visuals/` for scenes, `Unit/` for plain NUnit `[TestFixture]` classes that test logic (maths, parsing, validation) with no drawables.
 
 A scene:
@@ -1110,9 +1130,9 @@ public partial class TestSampleButton : SampleControlTestScene
 - Input, in a `ManualInputManagerTestScene`: `InputManager.MoveMouseTo(drawable)`, `Click`, `DoubleClick`, `Drag`, `ScrollBy`, `PressKey`, `ReleaseKey`, `TypeText`, `ChangeFocus`. Put content in `TestContent`.
 - Give each kind of scene a base class that caches what the App normally provides (see `references/sakura-application.md`, "Test controls and screens", and `references/sakura-game.md`, "Test a game").
 - `[VisualTestOnly("reason")]` on a test or class skips it in the headless run, for tests that need a real renderer.
-- To run the whole app inside a scene: create the App, `SetHost(host)`, then `AddApp(app)`. Use a new App in each test: a shown App is disposed when the scene clears.
+- To run the whole app inside a scene: create the App, `SetHost(host)`, give it `RelativeSizeAxes = Axes.Both`, then `AddApp(app)`. `AddApp` doesn't size it, and an unsized app draws nothing in the browser while its test still passes. Use a new App in each test: a shown App is disposed when the scene clears.
 - Every bug fix comes with a regression test.
-- Trap: headless text has no glyph metrics, so every `SpriteText` measures 0. Never assert on anything derived from text width.
+- Headless text is shaped and measured with the real fonts, as on screen, so a test can assert on a layout that depends on text size. Nothing is drawn unless pixel capture is on, and then each glyph is a solid box in the text's color.
 - Trap: NUnit reuses one fixture instance for every test in the class, and `SetupNUnit` calls `Clear()` before each test, which disposes the scene's children, including anything built once in the loader. Tests then run against a disposed, detached tree without throwing, and every size reads zero. Override `Clear` to keep the long-lived parts (with `DisposeOnRemoval = false`), or rebuild them in `[SetUp]`.
 - `DrawSize` and auto-size are worked out when read, so they're current right after a change. `DrawRectangle`, `ToScreenSpace` and vertices still use the last frame's layout.
 - Trap: positions on screen settle over a frame or more. Wait until a measurement stops changing before asserting on it (a step that waits until two frames agree).
@@ -1130,7 +1150,8 @@ AddAssert("It started faded", () => alphaWhenShown < 1);
 AddUntilStep("It fades in fully", () => Precision.AlmostEquals(panel.Alpha, 1f));
 ```
 
-- Trap: under `dotnet test` the steps run inside the base `TestScene`'s own `[TearDown]`, and NUnit runs a scene's `[TearDown]` before its base class's, so the scene's teardown runs before its steps; in the browser it runs after them. A teardown that deletes a scratch folder deletes it before the steps write to it. Make and remove per-test files in the steps themselves, or use `[OneTimeSetUp]` and `[OneTimeTearDown]` for the whole fixture.
+- Under `dotnet test` a scene's steps (those its `[SetUp]` methods added, then the test's own) run straight after the test method, before any `[TearDown]`, so a `[TearDown]` can delete what the steps wrote. Steps a `[TearDown]` adds run after it.
+- Trap: steps added in `[OneTimeSetUp]` run in the browser but never under `dotnet test`, which clears the steps before each test, and steps added in `[OneTimeTearDown]` never run. Add steps in `[SetUp]` or in the test.
 
 ## Add iPhone, iPad and Android — `--ios`, `--android`, `SakuraApplication.Run`, `SakuraActivity`
 
@@ -1187,7 +1208,7 @@ dotnet build Sample.Android -t:Install
 - Android Release: `dotnet publish -c Release -f net11.0-android -p:AndroidPackageFormats=apk%3Baab` with `-p:AndroidKeyStore=true` and the signing properties, passwords as `env:`. `ApplicationVersion` (the version code) must keep growing: a date-based `YYMMDDPP` does.
 - Version an iOS build with `-p:Version=… -p:ApplicationDisplayVersion=… -p:ApplicationVersion=…`. Velopack has no phone support.
 - Trap: a Debug Android build keeps its assemblies on the device, not in the APK. Install it with `-t:Install` or `-t:Run`; the APK alone won't start.
-- Trap: the Android emulator's API 36 image has a broken Vulkan driver. Use API 35. Warning `XA1040` (CoreCLR on Android is experimental) is expected.
+- Trap: the Android emulator's API 36 image has a broken Vulkan driver. Use API 35. On .NET 11, CoreCLR is Android's default runtime, and builds show no `XA1040`.
 - Trap: a configuration change the activity doesn't list in `ConfigurationChanges` restarts the activity, and SDL then kills the app. Besides the template's, list `Locale`, `LayoutDirection`, `FontScale`, `FontWeightAdjustment`, `GrammaticalGender`, `ColorMode`, `Touchscreen`, `Mcc` and `Mnc`.
 - Trap: switching a head between NuGet and a local Sakura leaves a linker cache that fails the next Release link ("Symbols were found but are not matching the assembly"). Delete the heads' `obj/Release` and `bin/Release`.
 - Trap: the first `devicectl` launch after an install is sometimes refused. Run it again.
@@ -1200,6 +1221,7 @@ Keywords: mobile, touch, finger, tap, multi-touch, pinch, OnTouchDown, OnTouchMo
 Touch:
 
 - Without any touch handler, the first finger acts as the mouse: a click fires on lift, a move past 10px scrolls the `ScrollableContainer` under it, a 500 ms hold is a right click, and nothing stays hovered after lift. Ordinary UI works on a phone with no extra code.
+- Trap: that right click runs a button's `Action` (see "Use the built-in controls"), so a long press on a button presses it. A finger that moves past the 10px with no `ScrollableContainer` under it presses where it landed.
 - For gameplay or gestures, override `OnTouchDown`, `OnTouchMove` and `OnTouchUp(TouchEvent e)` (`ScreenSpacePosition`, `Delta`, `Timestamp`, `Cancelled`). Return `true` from `OnTouchDown` to own that finger.
 - `MouseState.FromTouch` tells emulated mouse input apart. `PanZoomContainer` pinches with two fingers.
 - In a Debug build, a four-finger tap opens the debug tools.
@@ -1223,7 +1245,8 @@ haptics?.Play(HapticFeedback.Success);           // Selection, Light, Medium, He
 
 Lifecycle:
 
-- Going to the background, the framework pauses its threads, releases the surface, flushes every `ConfigManager` and the log. There's no event for it, and nothing for the app to do.
+- Going to the background, the framework pauses its threads, releases the surface, flushes every `ConfigManager` and the log. For anything else to save, handle `host.Window.EnteringBackground`: it runs on whichever thread the system reports it, after the framework has paused its threads, and must finish before it returns (Android takes the surface right after).
+- Trap: make that handler safe to run twice. It also runs when the system ends the app, and on the iOS simulator it fired twice per move to the background.
 - `host.ReturnedToForeground` is raised on the update thread when the app comes back, on mobile only. The update thread is stopped in the background, so polling `IWindow.IsActive` can't see the return. Use it to look for files dropped into the app's folder while it was away, and unsubscribe in `Dispose`.
 - `host.LowMemory` for dropping caches.
 - `IAudioManager.OutputInterrupted` (`Reactive<bool>`) is true while a call, alarm or Siri holds the audio. Pause gameplay on it. The next press takes the audio back.
@@ -1237,7 +1260,7 @@ Keyboards:
 Files:
 
 - `Storage` is the app data folder: iOS `Library/Application Support`, or `Documents` when `Info.plist` sets `UIFileSharingEnabled` (existing files move over). Android: the private files folder, or `Android/data/<package>/files`, reachable over USB, when the activity overrides `SharesFiles => true`.
-- iOS: a file opened with the app from another app arrives as `OnDragDropFile`, the same as a drop on the desktop window, so one override covers both. Files opened in place are copied to a temporary folder first. `ShowOpenFileDialog` shows the document picker and also copies the pick before the callback.
+- iOS: a file opened with the app from another app arrives as `OnDragDropFile`, the same as a drop on the desktop window, so one override covers both. Its `Position` is (0, 0), since there's no pointer. Files opened in place are copied to a temporary folder first. `ShowOpenFileDialog` shows the document picker and also copies the pick before the callback.
 - iOS: `OpenFileExternally` and `PresentFileExternally` open the share sheet (files only, not folders). On Android both return `false`: no sharing yet.
 - Trap: Android doesn't deliver "open with" or share intents to the app. The activity handles them: `[IntentFilter]`s, `OnCreate` (only when `savedInstanceState.IsNull()`) and `OnNewIntent`, reading `Intent.Data` or `ClipData` as `content://` URIs through `ContentResolver`, queued until `CreateApp` has run, then handed to the app through a method that's safe from any thread.
 - Trap: Android `IntentFilter` path patterns don't backtrack, so a file name with N dots needs N patterns.
